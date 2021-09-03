@@ -588,7 +588,7 @@ def _get_date_str():
 
 
 
-
+# parameter setting : -train_label_path '/home/sihun/yolov4_split_learning/data/dataset/label' -dir /home/sihun/yolov4_split_learning/data/dataset
 if __name__ == "__main__":
 
     logging = init_logger(log_dir='log')
