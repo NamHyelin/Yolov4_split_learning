@@ -250,12 +250,12 @@ class Yolo_dataset(Dataset):
         truth = {}
         for i, filename in enumerate(glob.glob(os.path.join(label_path, '*.txt'))):
             with open(filename, 'r', encoding='utf-8') as f:
-                truth[i] = []
+                truth[str(i).zfill(3)+'.bmp'] = []
                 for line in f.readlines():
                     data = line.split(" ")
                     data.append(int(data[0]))
                     data.pop(0)
-                    truth[i].append([float(j) for j in data])
+                    truth[str(i).zfill(3)+'.bmp'].append([float(j) for j in data])
 
         self.truth = truth
         self.imgs = list(self.truth.keys())
