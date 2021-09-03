@@ -13,7 +13,7 @@
 import os
 import random
 import sys
-
+import glob
 import cv2
 import numpy as np
 
@@ -242,23 +242,20 @@ def draw_box(img, bboxes):
 class Yolo_dataset(Dataset):
     def __init__(self, lable_path, cfg, train=True):
         super(Yolo_dataset, self).__init__()
-        if cfg.mixup == 2:
-            print("cutmix=1 - isn't supported for Detector")
-            raise
-        elif cfg.mixup == 2 and cfg.letter_box:
-            print("Combination: letter_box=1 & mosaic=1 - isn't supported, use only 1 of these parameters")
-            raise
 
         self.cfg = cfg
         self.train = train
+        label_path = '/home/sihun/pytorch-YOLOv4-master/data/dataset/label'
 
         truth = {}
-        f = open(lable_path, 'r', encoding='utf-8')
-        for line in f.readlines():
-            data = line.split(" ")
-            truth[data[0]] = []
-            for i in data[1:]:
-                truth[data[0]].append([int(float(j)) for j in i.split(',')])
+        for i, filename in enumerate(glob.glob(os.path.join(label_path, '*.txt'))):
+            with open(filename, 'r', encoding='utf-8') as f:
+                truth[i] = []
+                for line in f.readlines():
+                    data = line.split(" ")
+                    data.append(int(data[0]))
+                    data.pop(0)
+                    truth[i].append([float(j) for j in data])
 
         self.truth = truth
         self.imgs = list(self.truth.keys())
