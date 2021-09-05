@@ -4,11 +4,6 @@ import os, sys, math
 import argparse
 from collections import deque
 import datetime
-import h5py
-
-import socket
-import struct
-import pickle
 
 import cv2
 from tqdm import tqdm
@@ -23,13 +18,15 @@ from easydict import EasyDict as edict
 
 from dataset import Yolo_dataset
 from cfg import Cfg
-from local_model import Yolov4_local
-from tool.darknet2pytorch import Darknet
+from server_model import Yolov4_server, Yolov4_local
+
 
 from tool.tv_reference.utils import collate_fn as val_collate
 from tool.tv_reference.coco_utils import convert_to_coco_api
 from tool.tv_reference.coco_eval import CocoEvaluator
-
+import struct
+import socket
+import pickle
 
 def init_logger(log_file=None, log_dir=None, log_level=logging.INFO, mode='w', stdout=True):
     """
@@ -349,79 +346,12 @@ class Yolo_loss(nn.Module):
 
         return loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2
 
-logging = init_logger(log_dir='log')
-cfg = get_args(**Cfg)
-os.environ["CUDA_VISIBLE_DEVICES"] = cfg.gpu
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-logging.info(f'Using device {device}')
-
-
-model = Yolov4_local()
-model.to(device=device)
-
-def send_msg(sock, msg):
-    # prefix each message with a 4-byte length in network byte order
-    msg = pickle.dumps(msg)
-    l_send = len(msg)
-    msg = struct.pack('>I', l_send) + msg
-    sock.sendall(msg)
-    return l_send
-
-def recv_msg(sock):
-    # read message length and unpack it into an integer
-    raw_msglen = recvall(sock, 4)
-    if not raw_msglen:
-        return None
-    msglen = struct.unpack('>I', raw_msglen)[0]
-    # read the message data
-    msg =  recvall(sock, msglen)
-    msg = pickle.loads(msg)
-    return msg, msglen
-
-def recvall(sock, n):
-    # helper function to receive n bytes or return None if EOF is hit
-    data = b''
-    while len(data) < n:
-        packet = sock.recv(n - len(data))
-        if not packet:
-            return None
-        data += packet
-    return data
-
-host = 'localhost'
-port = 10080
-
-#Open the server socket
-s = socket.socket()
-s.bind((host, port))
-s.listen(5)
-
-users=1
-clientsoclist = []
-
-for i in range(users):
-    conn, addr = s.accept()
-    print('Conntected with', addr)
-    clientsoclist.append(conn)    # append client socket on list
-
-    datasize = send_msg(conn, epochs)    #send epoch
-    total_sendsize_list.append(datasize)
-    client_sendsize_list[i].append(datasize)
-
-    total_batch, datasize = recv_msg(conn)    # get total_batch of train dataset
-    total_receivesize_list.append(datasize)
-    client_receivesize_list[i].append(datasize)
-
-    train_total_batch.append(total_batch)
-
-def server_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=20, img_scale=0.5):
+def server_train(model_server, model_local,device, config, epochs=5, batch_size=1, save_cp=True, log_step=20, img_scale=0.5):
+    users=1
     val_dataset = Yolo_dataset(config.val_label, config, train=False)
 
-    n_train = len(train_dataset)
     n_val = len(val_dataset)
 
-    train_loader = DataLoader(train_dataset, batch_size=config.batch // config.subdivisions, shuffle=True,
-                              num_workers=8, pin_memory=True, drop_last=True, collate_fn=collate)
 
     val_loader = DataLoader(val_dataset, batch_size=config.batch // config.subdivisions, shuffle=True, num_workers=8,
                             pin_memory=True, drop_last=True, collate_fn=val_collate)
@@ -429,11 +359,6 @@ def server_train(model, device, config, epochs=5, batch_size=1, save_cp=True, lo
     writer = SummaryWriter(log_dir=config.TRAIN_TENSORBOARD_DIR,
                            filename_suffix=f'OPT_{config.TRAIN_OPTIMIZER}_LR_{config.learning_rate}_BS_{config.batch}_Sub_{config.subdivisions}_Size_{config.width}',
                            comment=f'OPT_{config.TRAIN_OPTIMIZER}_LR_{config.learning_rate}_BS_{config.batch}_Sub_{config.subdivisions}_Size_{config.width}')
-    # writer.add_images('legend',
-    #                   torch.from_numpy(train_dataset.label2colorlegend2(cfg.DATA_CLASSES).transpose([2, 0, 1])).to(
-    #                       device).unsqueeze(0))
-    max_itr = config.TRAIN_EPOCHS * n_train
-    # global_step = cfg.TRAIN_MINEPOCH * n_train
 
     global_step = 0
     logging.info(f'''Starting training:
@@ -441,7 +366,6 @@ def server_train(model, device, config, epochs=5, batch_size=1, save_cp=True, lo
         Batch size:      {config.batch}
         Subdivisions:    {config.subdivisions}
         Learning rate:   {config.learning_rate}
-        Training size:   {n_train}
         Validation size: {n_val}
         Checkpoints:     {save_cp}
         Device:          {device.type}
@@ -464,16 +388,45 @@ def server_train(model, device, config, epochs=5, batch_size=1, save_cp=True, lo
             factor = 0.01
         return factor
 
+    def send_msg(sock, msg):
+        # prefix each message with a 4-byte length in network byte order
+        msg = pickle.dumps(msg)
+        l_send = len(msg)
+        msg = struct.pack('>I', l_send) + msg
+        sock.sendall(msg)
+        return l_send
+
+    def recv_msg(sock):
+        # read message length and unpack it into an integer
+        raw_msglen = recvall(sock, 4)
+        if not raw_msglen:
+            return None
+        msglen = struct.unpack('>I', raw_msglen)[0]
+        # read the message data
+        msg = recvall(sock, msglen)
+        msg = pickle.loads(msg)
+        return msg, msglen
+
+    def recvall(sock, n):
+        # helper function to receive n bytes or return None if EOF is hit
+        data = b''
+        while len(data) < n:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data += packet
+        return data
+
     if config.TRAIN_OPTIMIZER.lower() == 'adam':
         optimizer = optim.Adam(
-            model.parameters(),
+            model_server.parameters(),
             lr=config.learning_rate / config.batch,
             betas=(0.9, 0.999),
             eps=1e-08,
         )
     elif config.TRAIN_OPTIMIZER.lower() == 'sgd':
         optimizer = optim.SGD(
-            params=model.parameters(),
+            params=model_server.parameters(),
             lr=config.learning_rate / config.batch,
             momentum=config.momentum,
             weight_decay=config.decay,
@@ -487,109 +440,226 @@ def server_train(model, device, config, epochs=5, batch_size=1, save_cp=True, lo
 
     save_prefix = 'Yolov4_epoch'
     saved_models = deque()
-    model.train()
+    model_server.train()
+
+    host = 'localhost'
+    port = 10080
+    print(host)
+
+    #open the server socket
+    s = socket.socket()
+    s.bind((host, port))
+    s.listen(5)
+
+    clientsoclist = []
+    train_total_batch = []
+    val_acc = []
+    # client_weights = copy.deepcopy(resnet20_client.state_dict())
+
+    total_sendsize_list = []
+    total_receivesize_list = []
+
+    client_sendsize_list = [[] for i in range(users)]
+    client_receivesize_list = [[] for i in range(users)]
+
+    train_sendsize_list = []
+    train_receivesize_list = []
+    for i in range(users):
+        conn, addr = s.accept()
+        print('Conntected with', addr)
+        clientsoclist.append(conn)  # append client socket on list
+
+        datasize = send_msg(conn, epochs)  # send epoch
+        total_sendsize_list.append(datasize)
+        client_sendsize_list[i].append(datasize)
+
+        total_batch, datasize = recv_msg(conn)  # get total_batch of train dataset
+        total_receivesize_list.append(datasize)
+        client_receivesize_list[i].append(datasize)
+
+        train_total_batch.append(total_batch)  # append on list
+
 
     for epoch in range(epochs):
         # model.train()
-        epoch_loss = 0
-        epoch_step = 0
 
-        with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
-            for i, batch in enumerate(train_loader):
-                global_step += 1
-                epoch_step += 1
-                images = batch[0]
-                bboxes = batch[1]
+        for user in range(users):
+            datasize = send_msg(clientsoclist[user])
+            total_sendsize_list.append(datasize)
+            client_sendsize_list[user].append(datasize)
+            train_sendsize_list.append(datasize)
 
-                images = images.to(device=device, dtype=torch.float32)
-                bboxes = bboxes.to(device=device)
+            with tqdm(total=train_total_batch[user], desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
+                for i, in range(train_total_batch[user]):
+                    # initialize all gradients to zero
+                    model_server.zero_grad()
 
-                bboxes_pred = model(images)
-                loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = criterion(bboxes_pred, bboxes)
-                # loss = loss / config.subdivisions
-                loss.backward()
+                    # receive client message from socket
+                    msg,datasize=recv_msg(clientsoclist[user])
 
-                epoch_loss += loss.item()
+                    total_receivesize_list.append(datasize)
+                    client_receivesize_list[user].append(datasize)
+                    train_receivesize_list.append(datasize)
 
-                if global_step % config.subdivisions == 0:
+                    global_step += 1
+
+                    client_output_cpu = msg['client_output']  # client output tensor
+                    bboxes = msg['label']  # label
+
+                    client_output = client_output_cpu.to(device)
+                    bboxes = bboxes.clone().detach().long().to(device)
+
+                    output = model_server(client_output)
+
+                    loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = criterion(output, bboxes)
+                    # loss = loss / config.subdivisions
+                    loss.backward()
+
                     optimizer.step()
                     scheduler.step()
-                    model.zero_grad()
+                    msg=client_output_cpu.grad.clone().detach()
 
-                if global_step % (log_step * config.subdivisions) == 0:
-                    writer.add_scalar('train/Loss', loss.item(), global_step)
-                    writer.add_scalar('train/loss_xy', loss_xy.item(), global_step)
-                    writer.add_scalar('train/loss_wh', loss_wh.item(), global_step)
-                    writer.add_scalar('train/loss_obj', loss_obj.item(), global_step)
-                    writer.add_scalar('train/loss_cls', loss_cls.item(), global_step)
-                    writer.add_scalar('train/loss_l2', loss_l2.item(), global_step)
-                    writer.add_scalar('lr', scheduler.get_lr()[0] * config.batch, global_step)
-                    pbar.set_postfix(**{'loss (batch)': loss.item(), 'loss_xy': loss_xy.item(),
-                                        'loss_wh': loss_wh.item(),
-                                        'loss_obj': loss_obj.item(),
-                                        'loss_cls': loss_cls.item(),
-                                        'loss_l2': loss_l2.item(),
-                                        'lr': scheduler.get_lr()[0] * config.batch
-                                        })
-                    logging.debug('Train step_{}: loss : {},loss xy : {},loss wh : {},'
-                                  'loss obj : {}，loss cls : {},loss l2 : {},lr : {}'
-                                  .format(global_step, loss.item(), loss_xy.item(),
-                                          loss_wh.item(), loss_obj.item(),
-                                          loss_cls.item(), loss_l2.item(),
-                                          scheduler.get_lr()[0] * config.batch))
-
-                pbar.update(images.shape[0])
+                    datasize = send_msg(clientsoclist[user], msg)
+                    total_sendsize_list.append(datasize)
+                    client_sendsize_list[user].append(datasize)
+                    train_sendsize_list.append(datasize)
 
 
-            eval_model = Yolov4_local()
-            # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
 
-            eval_model.load_state_dict(model.state_dict())
-            eval_model.to(device)
-            evaluator = evaluate(eval_model, val_loader, config, device)
-            del eval_model
+                    if global_step % (log_step * config.subdivisions) == 0:
+                        writer.add_scalar('train/Loss', loss.item(), global_step)
+                        writer.add_scalar('train/loss_xy', loss_xy.item(), global_step)
+                        writer.add_scalar('train/loss_wh', loss_wh.item(), global_step)
+                        writer.add_scalar('train/loss_obj', loss_obj.item(), global_step)
+                        writer.add_scalar('train/loss_cls', loss_cls.item(), global_step)
+                        writer.add_scalar('train/loss_l2', loss_l2.item(), global_step)
+                        writer.add_scalar('lr', scheduler.get_lr()[0] * config.batch, global_step)
+                        pbar.set_postfix(**{'loss (batch)': loss.item(), 'loss_xy': loss_xy.item(),
+                                            'loss_wh': loss_wh.item(),
+                                            'loss_obj': loss_obj.item(),
+                                            'loss_cls': loss_cls.item(),
+                                            'loss_l2': loss_l2.item(),
+                                            'lr': scheduler.get_lr()[0] * config.batch
+                                            })
+                        logging.debug('Train step_{}: loss : {},loss xy : {},loss wh : {},'
+                                      'loss obj : {}，loss cls : {},loss l2 : {},lr : {}'
+                                      .format(global_step, loss.item(), loss_xy.item(),
+                                              loss_wh.item(), loss_obj.item(),
+                                              loss_cls.item(), loss_l2.item(),
+                                              scheduler.get_lr()[0] * config.batch))
 
-            stats = evaluator.coco_eval['bbox'].stats
-            writer.add_scalar('train/AP', stats[0], global_step)
-            writer.add_scalar('train/AP50', stats[1], global_step)
-            writer.add_scalar('train/AP75', stats[2], global_step)
-            writer.add_scalar('train/AP_small', stats[3], global_step)
-            writer.add_scalar('train/AP_medium', stats[4], global_step)
-            writer.add_scalar('train/AP_large', stats[5], global_step)
-            writer.add_scalar('train/AR1', stats[6], global_step)
-            writer.add_scalar('train/AR10', stats[7], global_step)
-            writer.add_scalar('train/AR100', stats[8], global_step)
-            writer.add_scalar('train/AR_small', stats[9], global_step)
-            writer.add_scalar('train/AR_medium', stats[10], global_step)
-            writer.add_scalar('train/AR_large', stats[11], global_step)
+            client_weights, datasize = recv_msg(clientsoclist[user])
+            total_receivesize_list.append(datasize)
+            client_receivesize_list[user].append(datasize)
+            train_receivesize_list.append(datasize)
 
-            if save_cp:
+        eval_model_local = Yolov4_local()
+        # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
+
+        eval_model_local.load_state_dict(model_local.state_dict())
+        eval_model_local.to(device)
+        evaluator = evaluate(eval_model_local, model_server, val_loader, config, device)
+        del eval_model_local
+
+        stats = evaluator.coco_eval['bbox'].stats
+        writer.add_scalar('train/AP', stats[0], global_step)
+        writer.add_scalar('train/AP50', stats[1], global_step)
+        writer.add_scalar('train/AP75', stats[2], global_step)
+        writer.add_scalar('train/AP_small', stats[3], global_step)
+        writer.add_scalar('train/AP_medium', stats[4], global_step)
+        writer.add_scalar('train/AP_large', stats[5], global_step)
+        writer.add_scalar('train/AR1', stats[6], global_step)
+        writer.add_scalar('train/AR10', stats[7], global_step)
+        writer.add_scalar('train/AR100', stats[8], global_step)
+        writer.add_scalar('train/AR_small', stats[9], global_step)
+        writer.add_scalar('train/AR_medium', stats[10], global_step)
+        writer.add_scalar('train/AR_large', stats[11], global_step)
+
+        if save_cp:
+            try:
+                # os.mkdir(config.checkpoints)
+                os.makedirs(config.checkpoints, exist_ok=True)
+                logging.info('Created checkpoint directory')
+            except OSError:
+                pass
+            save_path = os.path.join(config.checkpoints, f'{save_prefix}{epoch + 1}.pth')
+            torch.save(model_server.state_dict(), save_path)
+            logging.info(f'Checkpoint {epoch + 1} saved !')
+            saved_models.append(save_path)
+            if len(saved_models) > config.keep_checkpoint_max > 0:
+                model_to_remove = saved_models.popleft()
                 try:
-                    # os.mkdir(config.checkpoints)
-                    os.makedirs(config.checkpoints, exist_ok=True)
-                    logging.info('Created checkpoint directory')
-                except OSError:
-                    pass
-                save_path = os.path.join(config.checkpoints, f'{save_prefix}{epoch + 1}.pth')
-                torch.save(model.state_dict(), save_path)
-                logging.info(f'Checkpoint {epoch + 1} saved !')
-                saved_models.append(save_path)
-                if len(saved_models) > config.keep_checkpoint_max > 0:
-                    model_to_remove = saved_models.popleft()
-                    try:
-                        os.remove(model_to_remove)
-                    except:
-                        logging.info(f'failed to remove {model_to_remove}')
+                    os.remove(model_to_remove)
+                except:
+                    logging.info(f'failed to remove {model_to_remove}')
+
+    # print communication overheads
+    print('---total_sendsize_list---')
+    total_size = 0
+    for size in total_sendsize_list:
+        #     print(size)
+        total_size += size
+    print("total_sendsize size: {} bytes".format(total_size))
+    print("number of total_send: ", len(total_sendsize_list))
+    print('\n')
+
+    print('---total_receivesize_list---')
+    total_size = 0
+    for size in total_receivesize_list:
+        #     print(size)
+        total_size += size
+    print("total receive sizes: {} bytes".format(total_size))
+    print("number of total receive: ", len(total_receivesize_list))
+    print('\n')
+
+    for i in range(users):
+        print('---client_sendsize_list(user{})---'.format(i))
+        total_size = 0
+        for size in client_sendsize_list[i]:
+            #         print(size)
+            total_size += size
+        print("total client_sendsizes(user{}): {} bytes".format(i, total_size))
+        print("number of client_send(user{}): ".format(i), len(client_sendsize_list[i]))
+        print('\n')
+
+        print('---client_receivesize_list(user{})---'.format(i))
+        total_size = 0
+        for size in client_receivesize_list[i]:
+            #         print(size)
+            total_size += size
+        print("total client_receive sizes(user{}): {} bytes".format(i, total_size))
+        print("number of client_send(user{}): ".format(i), len(client_receivesize_list[i]))
+        print('\n')
+
+    print('---train_sendsize_list---')
+    total_size = 0
+    for size in train_sendsize_list:
+        #     print(size)
+        total_size += size
+    print("total train_sendsizes: {} bytes".format(total_size))
+    print("number of train_send: ", len(train_sendsize_list))
+    print('\n')
+
+    print('---train_receivesize_list---')
+    total_size = 0
+    for size in train_receivesize_list:
+        #     print(size)
+        total_size += size
+    print("total train_receivesizes: {} bytes".format(total_size))
+    print("number of train_receive: ", len(train_receivesize_list))
+    print('\n')
+
 
     writer.close()
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, cfg, device, logger=None, **kwargs):
+def evaluate(model_local, model_server, data_loader, cfg, device, logger=None, **kwargs):
     """ finished, tested
     """
     # cpu_device = torch.device("cpu")
-    model.eval()
+    model_local.eval()
+    model_server.eval()
     # header = 'Test:'
 
     coco = convert_to_coco_api(data_loader.dataset, bbox_fmt='coco')
@@ -606,8 +676,9 @@ def evaluate(model, data_loader, cfg, device, logger=None, **kwargs):
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         model_time = time.time()
-        outputs = model(model_input)
-
+        outputs = model_local(model_input)
+        outputs.long()
+        outputs=model_server(outputs)
         # outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
         model_time = time.time() - model_time
 
@@ -649,15 +720,29 @@ def evaluate(model, data_loader, cfg, device, logger=None, **kwargs):
     return coco_evaluator
 
 
-try:
-    server_train(model=model,
-          config=cfg,
-          epochs=cfg.TRAIN_EPOCHS,
-          device=device, )
-except KeyboardInterrupt:
-    torch.save(model.state_dict(), 'INTERRUPTED.pth')
-    logging.info('Saved interrupt')
+if __name__ == "__main__":
+
+    logging = init_logger(log_dir='log')
+    cfg = get_args(**Cfg)
+    os.environ["CUDA_VISIBLE_DEVICES"] = cfg.gpu
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logging.info(f'Using device {device}')
+
+
+    model_server = Yolov4_local()
+    model_server.to(device=device)
+    model_local=Yolov4_server()
+    model_local.to(device=device)
+
+
     try:
-        sys.exit(0)
-    except SystemExit:
-        os._exit(0)
+        server_train(model_server=model_server,model_local=model_local,device=device,
+              config=cfg,
+              epochs=cfg.TRAIN_EPOCHS)
+    except KeyboardInterrupt:
+        torch.save(model_server.state_dict(), 'INTERRUPTED.pth')
+        logging.info('Saved interrupt')
+        try:
+            sys.exit(0)
+        except SystemExit:
+            os._exit(0)

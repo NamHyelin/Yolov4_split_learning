@@ -24,6 +24,9 @@ from tool.darknet2pytorch import Darknet
 from tool.tv_reference.utils import collate_fn as val_collate
 from tool.tv_reference.coco_utils import convert_to_coco_api
 from tool.tv_reference.coco_eval import CocoEvaluator
+import struct
+import socket
+import pickle
 
 def bboxes_iou(bboxes_a, bboxes_b, xyxy=True, GIoU=False, DIoU=False, CIoU=False):
     """Calculate the Intersection of Unions (IoUs) between bounding boxes.
@@ -350,9 +353,50 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
     saved_models = deque()
     model.train()
 
+
+    def send_msg(sock, msg):
+        # prefix each message with a 4-byte length in network byte order
+        msg = pickle.dumps(msg)
+        msg = struct.pack('>I', len(msg)) + msg
+        sock.sendall(msg)
+
+
+    def recv_msg(sock):
+        # read message length and unpack it into an integer
+        raw_msglen = recvall(sock, 4)
+        if not raw_msglen:
+            return None
+        msglen = struct.unpack('>I', raw_msglen)[0]
+        # read the message data
+        msg = recvall(sock, msglen)
+        msg = pickle.loads(msg)
+        return msg
+
+
+    def recvall(sock, n):
+        # helper function to receive n bytes or return None if EOF is hit
+        data = b''
+        while len(data) < n:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data += packet
+        return data
+
+
+    host = input("IP address: ")
+    port = 10080
+
+    s = socket.socket()
+    s.connect((host, port))
+
+    epochs= recv_msg(s)  # get epoch
+    msg = n_train
+    send_msg(s, msg)  # send total_batch of train dataset
+
+
     for epoch in range(epochs):
         # model.train()
-        epoch_loss = 0
         epoch_step = 0
 
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
@@ -370,60 +414,19 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                 output = model(images)
                 output_client=output.clone().detach().requres_grad(True)
                 ##send to the server and receive partial loss for update
-                client_grad  = server_train(output_client, bboxes)
+                msg = {
+                    'client_output': output_client,
+                    'label': bboxes
+                }
+                send_msg(s, msg)
+
+                client_grad  = recv_msg(s)
                 output.backward(client_grad)
 
-                epoch_loss += loss.item()
-
-                if global_step % config.subdivisions == 0:
-                    optimizer.step()
-                    scheduler.step()
-                    model.zero_grad()
-
-                if global_step % (log_step * config.subdivisions) == 0:
-                    writer.add_scalar('train/Loss', loss.item(), global_step)
-                    writer.add_scalar('train/loss_xy', loss_xy.item(), global_step)
-                    writer.add_scalar('train/loss_wh', loss_wh.item(), global_step)
-                    writer.add_scalar('train/loss_obj', loss_obj.item(), global_step)
-                    writer.add_scalar('train/loss_cls', loss_cls.item(), global_step)
-                    writer.add_scalar('train/loss_l2', loss_l2.item(), global_step)
-                    writer.add_scalar('lr', scheduler.get_lr()[0] * config.batch, global_step)
-                    pbar.set_postfix(**{'loss (batch)': loss.item(), 'loss_xy': loss_xy.item(),
-                                        'loss_wh': loss_wh.item(),
-                                        'loss_obj': loss_obj.item(),
-                                        'loss_cls': loss_cls.item(),
-                                        'loss_l2': loss_l2.item(),
-                                        'lr': scheduler.get_lr()[0] * config.batch
-                                        })
-                    logging.debug('Train step_{}: loss : {},loss xy : {},loss wh : {},'
-                                  'loss obj : {}，loss cls : {},loss l2 : {},lr : {}'
-                                  .format(global_step, loss.item(), loss_xy.item(),
-                                          loss_wh.item(), loss_obj.item(),
-                                          loss_cls.item(), loss_l2.item(),
-                                          scheduler.get_lr()[0] * config.batch))
-
-
-            eval_model = Yolov4_local()
-            # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
-
-            eval_model.load_state_dict(model.state_dict())
-            eval_model.to(device)
-            evaluator = evaluate(eval_model, val_loader, config, device)
-            del eval_model
-
-            stats = evaluator.coco_eval['bbox'].stats
-            writer.add_scalar('train/AP', stats[0], global_step)
-            writer.add_scalar('train/AP50', stats[1], global_step)
-            writer.add_scalar('train/AP75', stats[2], global_step)
-            writer.add_scalar('train/AP_small', stats[3], global_step)
-            writer.add_scalar('train/AP_medium', stats[4], global_step)
-            writer.add_scalar('train/AP_large', stats[5], global_step)
-            writer.add_scalar('train/AR1', stats[6], global_step)
-            writer.add_scalar('train/AR10', stats[7], global_step)
-            writer.add_scalar('train/AR100', stats[8], global_step)
-            writer.add_scalar('train/AR_small', stats[9], global_step)
-            writer.add_scalar('train/AR_medium', stats[10], global_step)
-            writer.add_scalar('train/AR_large', stats[11], global_step)
+                optimizer.step()
+                scheduler.step()
+                model.zero_grad()
+            send_msg(s, model.state_dict())
 
             if save_cp:
                 try:
@@ -600,6 +603,7 @@ if __name__ == "__main__":
 
     model = Yolov4_local()
     model.to(device=device)
+
 
 
     try:
