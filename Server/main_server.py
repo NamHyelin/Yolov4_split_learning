@@ -4,7 +4,7 @@ import os, sys, math
 import argparse
 from collections import deque
 import datetime
-
+import copy
 import cv2
 from tqdm import tqdm
 import numpy as np
@@ -201,7 +201,7 @@ def bboxes_iou(bboxes_a, bboxes_b, xyxy=True, GIoU=False, DIoU=False, CIoU=False
     return iou
 
 class Yolo_loss(nn.Module):
-    def __init__(self, n_classes=80, n_anchors=3, device=None, batch=2):
+    def __init__(self, n_classes=80, n_anchors=3, device=None, batch=1):
         super(Yolo_loss, self).__init__()
         self.device = device
         self.strides = [8, 16, 32]
@@ -454,7 +454,7 @@ def server_train(model_server, model_local,device, config, epochs=5, batch_size=
     clientsoclist = []
     train_total_batch = []
     val_acc = []
-    # client_weights = copy.deepcopy(resnet20_client.state_dict())
+    client_weights = copy.deepcopy(model_local.state_dict())
 
     total_sendsize_list = []
     total_receivesize_list = []
@@ -481,16 +481,16 @@ def server_train(model_server, model_local,device, config, epochs=5, batch_size=
 
 
     for epoch in range(epochs):
-        # model.train()
+        model_server.train()
 
         for user in range(users):
-            datasize = send_msg(clientsoclist[user])
+            datasize = send_msg(clientsoclist[user], client_weights)
             total_sendsize_list.append(datasize)
             client_sendsize_list[user].append(datasize)
             train_sendsize_list.append(datasize)
 
             with tqdm(total=train_total_batch[user], desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
-                for i, in range(train_total_batch[user]):
+                for i in range(train_total_batch[user]):
                     # initialize all gradients to zero
                     model_server.zero_grad()
 
@@ -506,10 +506,14 @@ def server_train(model_server, model_local,device, config, epochs=5, batch_size=
                     client_output_cpu = msg['client_output']  # client output tensor
                     bboxes = msg['label']  # label
 
-                    client_output = client_output_cpu.to(device)
+                    client_output1 = client_output_cpu[0].to(device)
+                    client_output2 = client_output_cpu[1].to(device)
+                    client_output3 = client_output_cpu[2].to(device)
+
+
                     bboxes = bboxes.clone().detach().long().to(device)
 
-                    output = model_server(client_output)
+                    output = model_server(client_output1,client_output2, client_output3)
 
                     loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = criterion(output, bboxes)
                     # loss = loss / config.subdivisions
@@ -517,7 +521,8 @@ def server_train(model_server, model_local,device, config, epochs=5, batch_size=
 
                     optimizer.step()
                     scheduler.step()
-                    msg=client_output_cpu.grad.clone().detach()
+                    msg=(client_output_cpu[0].grad.clone().detach(), client_output_cpu[1].grad.clone().detach(),
+                         client_output_cpu[2].grad.clone().detach())
 
                     datasize = send_msg(clientsoclist[user], msg)
                     total_sendsize_list.append(datasize)
@@ -729,16 +734,15 @@ if __name__ == "__main__":
     logging.info(f'Using device {device}')
 
 
-    model_server = Yolov4_local()
+    model_server = Yolov4_server()
     model_server.to(device=device)
-    model_local=Yolov4_server()
+    model_local=Yolov4_local()
     model_local.to(device=device)
 
 
     try:
         server_train(model_server=model_server,model_local=model_local,device=device,
-              config=cfg,
-              epochs=cfg.TRAIN_EPOCHS)
+              config=cfg,epochs=cfg.TRAIN_EPOCHS)
     except KeyboardInterrupt:
         torch.save(model_server.state_dict(), 'INTERRUPTED.pth')
         logging.info('Saved interrupt')

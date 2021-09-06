@@ -432,4 +432,4 @@ class Yolov4_local(nn.Module):
         d4 = self.down4(d3)
         d5 = self.down5(d4)
 
-        return(d5,d4,d3)
+        return (d5,d4,d3)

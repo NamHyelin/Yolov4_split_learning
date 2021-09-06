@@ -283,10 +283,10 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
     n_train = len(train_dataset)
     n_val = len(val_dataset)
 
-    train_loader = DataLoader(train_dataset, batch_size=config.batch // config.subdivisions, shuffle=True,
-                              num_workers=8, pin_memory=True, drop_last=True, collate_fn=collate)
+    train_loader = DataLoader(train_dataset, batch_size=config.batch , shuffle=True,
+                               pin_memory=True, drop_last=True)
 
-    val_loader = DataLoader(val_dataset, batch_size=config.batch // config.subdivisions, shuffle=True, num_workers=8,
+    val_loader = DataLoader(val_dataset, batch_size=config.batch , shuffle=True,
                             pin_memory=True, drop_last=True, collate_fn=val_collate)
 
     writer = SummaryWriter(log_dir=config.TRAIN_TENSORBOARD_DIR,
@@ -396,11 +396,12 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
 
 
     for epoch in range(epochs):
-        # model.train()
+        model.train(True)
         epoch_step = 0
-
+        local_weight=recv_msg(s)
+        model.load_state_dict(local_weight)
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
-            for i, batch in enumerate(train_loader):
+            for batch in train_loader:
                 global_step += 1
                 epoch_step += 1
                 images = batch[0]
@@ -412,17 +413,22 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
 
                 #bboxes_pred = model(images)
                 output = model(images)
-                output_client=output.clone().detach().requres_grad(True)
+                print(output)
+
+                output_client1=output[0].clone().detach().requires_grad_(True)
+                output_client2=output[1].clone().detach().requires_grad_(True)
+                output_client3=output[2].clone().detach().requires_grad_(True)
                 ##send to the server and receive partial loss for update
                 msg = {
-                    'client_output': output_client,
+                    'client_output': (output_client1,output_client2,output_client3),
                     'label': bboxes
                 }
                 send_msg(s, msg)
 
                 client_grad  = recv_msg(s)
-                output.backward(client_grad)
-
+                output[0].backward(client_grad[0], retain_graph=True)
+                output[1].backward(client_grad[1], retain_graph=True)
+                output[2].backward(client_grad[2])
                 optimizer.step()
                 scheduler.step()
                 model.zero_grad()

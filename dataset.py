@@ -242,12 +242,12 @@ def draw_box(img, bboxes):
 class Yolo_dataset(Dataset):
     def __init__(self, lable_path, cfg, train=True):
         super(Yolo_dataset, self).__init__()
-        if cfg.mixup == 2:
-            print("cutmix=1 - isn't supported for Detector")
-            raise
-        elif cfg.mixup == 2 and cfg.letter_box:
-            print("Combination: letter_box=1 & mosaic=1 - isn't supported, use only 1 of these parameters")
-            raise
+        # if cfg.mixup == 2:
+        #     print("cutmix=1 - isn't supported for Detector")
+        #     raise
+        # elif cfg.mixup == 2 and cfg.letter_box:
+        #     print("Combination: letter_box=1 & mosaic=1 - isn't supported, use only 1 of these parameters")
+        #     raise
 
         self.cfg = cfg
         self.train = train
@@ -272,14 +272,14 @@ class Yolo_dataset(Dataset):
         img_path = self.imgs[index]
         bboxes = np.array(self.truth.get(img_path), dtype=np.float)
         img_path = os.path.join(self.cfg.dataset_dir, img_path)
-        use_mixup = self.cfg.mixup
-        if random.randint(0, 1):
-            use_mixup = 0
-
-        if use_mixup == 3:
-            min_offset = 0.2
-            cut_x = random.randint(int(self.cfg.w * min_offset), int(self.cfg.w * (1 - min_offset)))
-            cut_y = random.randint(int(self.cfg.h * min_offset), int(self.cfg.h * (1 - min_offset)))
+        # use_mixup = self.cfg.mixup
+        # if random.randint(0, 1):
+        #     use_mixup = 0
+        #
+        # if use_mixup == 3:
+        #     min_offset = 0.2
+        #     cut_x = random.randint(int(self.cfg.w * min_offset), int(self.cfg.w * (1 - min_offset)))
+        #     cut_y = random.randint(int(self.cfg.h * min_offset), int(self.cfg.h * (1 - min_offset)))
 
         r1, r2, r3, r4, r_scale = 0, 0, 0, 0, 0
         dhue, dsat, dexp, flip, blur = 0, 0, 0, 0, 0
@@ -288,100 +288,100 @@ class Yolo_dataset(Dataset):
         out_img = np.zeros([self.cfg.h, self.cfg.w, 3])
         out_bboxes = []
 
-        for i in range(use_mixup + 1):
-            if i != 0:
-                img_path = random.choice(list(self.truth.keys()))
-                bboxes = np.array(self.truth.get(img_path), dtype=np.float)
-                img_path = os.path.join(self.cfg.dataset_dir, img_path)
-            img = cv2.imread(img_path)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            if img is None:
-                continue
-            oh, ow, oc = img.shape
-            dh, dw, dc = np.array(np.array([oh, ow, oc]) * self.cfg.jitter, dtype=np.int)
-
-            dhue = rand_uniform_strong(-self.cfg.hue, self.cfg.hue)
-            dsat = rand_scale(self.cfg.saturation)
-            dexp = rand_scale(self.cfg.exposure)
-
-            pleft = random.randint(-dw, dw)
-            pright = random.randint(-dw, dw)
-            ptop = random.randint(-dh, dh)
-            pbot = random.randint(-dh, dh)
-
-            flip = random.randint(0, 1) if self.cfg.flip else 0
-
-            if (self.cfg.blur):
-                tmp_blur = random.randint(0, 2)  # 0 - disable, 1 - blur background, 2 - blur the whole image
-                if tmp_blur == 0:
-                    blur = 0
-                elif tmp_blur == 1:
-                    blur = 1
-                else:
-                    blur = self.cfg.blur
-
-            if self.cfg.gaussian and random.randint(0, 1):
-                gaussian_noise = self.cfg.gaussian
-            else:
-                gaussian_noise = 0
-
-            if self.cfg.letter_box:
-                img_ar = ow / oh
-                net_ar = self.cfg.w / self.cfg.h
-                result_ar = img_ar / net_ar
-                # print(" ow = %d, oh = %d, w = %d, h = %d, img_ar = %f, net_ar = %f, result_ar = %f \n", ow, oh, w, h, img_ar, net_ar, result_ar);
-                if result_ar > 1:  # sheight - should be increased
-                    oh_tmp = ow / net_ar
-                    delta_h = (oh_tmp - oh) / 2
-                    ptop = ptop - delta_h
-                    pbot = pbot - delta_h
-                    # print(" result_ar = %f, oh_tmp = %f, delta_h = %d, ptop = %f, pbot = %f \n", result_ar, oh_tmp, delta_h, ptop, pbot);
-                else:  # swidth - should be increased
-                    ow_tmp = oh * net_ar
-                    delta_w = (ow_tmp - ow) / 2
-                    pleft = pleft - delta_w
-                    pright = pright - delta_w
-                    # printf(" result_ar = %f, ow_tmp = %f, delta_w = %d, pleft = %f, pright = %f \n", result_ar, ow_tmp, delta_w, pleft, pright);
-
-            swidth = ow - pleft - pright
-            sheight = oh - ptop - pbot
-
-            truth, min_w_h = fill_truth_detection(bboxes, self.cfg.boxes, self.cfg.classes, flip, pleft, ptop, swidth,
-                                                  sheight, self.cfg.w, self.cfg.h)
-            if (min_w_h / 8) < blur and blur > 1:  # disable blur if one of the objects is too small
-                blur = min_w_h / 8
-
-            ai = image_data_augmentation(img, self.cfg.w, self.cfg.h, pleft, ptop, swidth, sheight, flip,
-                                         dhue, dsat, dexp, gaussian_noise, blur, truth)
-
-            if use_mixup == 0:
-                out_img = ai
-                out_bboxes = truth
-            if use_mixup == 1:
-                if i == 0:
-                    old_img = ai.copy()
-                    old_truth = truth.copy()
-                elif i == 1:
-                    out_img = cv2.addWeighted(ai, 0.5, old_img, 0.5)
-                    out_bboxes = np.concatenate([old_truth, truth], axis=0)
-            elif use_mixup == 3:
-                if flip:
-                    tmp = pleft
-                    pleft = pright
-                    pright = tmp
-
-                left_shift = int(min(cut_x, max(0, (-int(pleft) * self.cfg.w / swidth))))
-                top_shift = int(min(cut_y, max(0, (-int(ptop) * self.cfg.h / sheight))))
-
-                right_shift = int(min((self.cfg.w - cut_x), max(0, (-int(pright) * self.cfg.w / swidth))))
-                bot_shift = int(min(self.cfg.h - cut_y, max(0, (-int(pbot) * self.cfg.h / sheight))))
-
-                out_img, out_bbox = blend_truth_mosaic(out_img, ai, truth.copy(), self.cfg.w, self.cfg.h, cut_x,
-                                                       cut_y, i, left_shift, right_shift, top_shift, bot_shift)
-                out_bboxes.append(out_bbox)
-                # print(img_path)
-        if use_mixup == 3:
-            out_bboxes = np.concatenate(out_bboxes, axis=0)
+        # for i in range(use_mixup + 1):
+        #     if i != 0:
+        #         img_path = random.choice(list(self.truth.keys()))
+        #         bboxes = np.array(self.truth.get(img_path), dtype=np.float)
+        #         img_path = os.path.join(self.cfg.dataset_dir, img_path)
+        #     img = cv2.imread(img_path)
+        #     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        #     if img is None:
+        #         continue
+        #     oh, ow, oc = img.shape
+        #     dh, dw, dc = np.array(np.array([oh, ow, oc]) * self.cfg.jitter, dtype=np.int)
+        #
+        #     dhue = rand_uniform_strong(-self.cfg.hue, self.cfg.hue)
+        #     dsat = rand_scale(self.cfg.saturation)
+        #     dexp = rand_scale(self.cfg.exposure)
+        #
+        #     pleft = random.randint(-dw, dw)
+        #     pright = random.randint(-dw, dw)
+        #     ptop = random.randint(-dh, dh)
+        #     pbot = random.randint(-dh, dh)
+        #
+        #     flip = random.randint(0, 1) if self.cfg.flip else 0
+        #
+        #     if (self.cfg.blur):
+        #         tmp_blur = random.randint(0, 2)  # 0 - disable, 1 - blur background, 2 - blur the whole image
+        #         if tmp_blur == 0:
+        #             blur = 0
+        #         elif tmp_blur == 1:
+        #             blur = 1
+        #         else:
+        #             blur = self.cfg.blur
+        #
+        #     if self.cfg.gaussian and random.randint(0, 1):
+        #         gaussian_noise = self.cfg.gaussian
+        #     else:
+        #         gaussian_noise = 0
+        #
+        #     if self.cfg.letter_box:
+        #         img_ar = ow / oh
+        #         net_ar = self.cfg.w / self.cfg.h
+        #         result_ar = img_ar / net_ar
+        #         # print(" ow = %d, oh = %d, w = %d, h = %d, img_ar = %f, net_ar = %f, result_ar = %f \n", ow, oh, w, h, img_ar, net_ar, result_ar);
+        #         if result_ar > 1:  # sheight - should be increased
+        #             oh_tmp = ow / net_ar
+        #             delta_h = (oh_tmp - oh) / 2
+        #             ptop = ptop - delta_h
+        #             pbot = pbot - delta_h
+        #             # print(" result_ar = %f, oh_tmp = %f, delta_h = %d, ptop = %f, pbot = %f \n", result_ar, oh_tmp, delta_h, ptop, pbot);
+        #         else:  # swidth - should be increased
+        #             ow_tmp = oh * net_ar
+        #             delta_w = (ow_tmp - ow) / 2
+        #             pleft = pleft - delta_w
+        #             pright = pright - delta_w
+        #             # printf(" result_ar = %f, ow_tmp = %f, delta_w = %d, pleft = %f, pright = %f \n", result_ar, ow_tmp, delta_w, pleft, pright);
+        #
+        #     swidth = ow - pleft - pright
+        #     sheight = oh - ptop - pbot
+        #
+        #     truth, min_w_h = fill_truth_detection(bboxes, self.cfg.boxes, self.cfg.classes, flip, pleft, ptop, swidth,
+        #                                           sheight, self.cfg.w, self.cfg.h)
+        #     if (min_w_h / 8) < blur and blur > 1:  # disable blur if one of the objects is too small
+        #         blur = min_w_h / 8
+        #
+        #     ai = image_data_augmentation(img, self.cfg.w, self.cfg.h, pleft, ptop, swidth, sheight, flip,
+        #                                  dhue, dsat, dexp, gaussian_noise, blur, truth)
+        #
+        #     if use_mixup == 0:
+        #         out_img = ai
+        #         out_bboxes = truth
+        #     if use_mixup == 1:
+        #         if i == 0:
+        #             old_img = ai.copy()
+        #             old_truth = truth.copy()
+        #         elif i == 1:
+        #             out_img = cv2.addWeighted(ai, 0.5, old_img, 0.5)
+        #             out_bboxes = np.concatenate([old_truth, truth], axis=0)
+        #     elif use_mixup == 3:
+        #         if flip:
+        #             tmp = pleft
+        #             pleft = pright
+        #             pright = tmp
+        #
+        #         left_shift = int(min(cut_x, max(0, (-int(pleft) * self.cfg.w / swidth))))
+        #         top_shift = int(min(cut_y, max(0, (-int(ptop) * self.cfg.h / sheight))))
+        #
+        #         right_shift = int(min((self.cfg.w - cut_x), max(0, (-int(pright) * self.cfg.w / swidth))))
+        #         bot_shift = int(min(self.cfg.h - cut_y, max(0, (-int(pbot) * self.cfg.h / sheight))))
+        #
+        #         out_img, out_bbox = blend_truth_mosaic(out_img, ai, truth.copy(), self.cfg.w, self.cfg.h, cut_x,
+        #                                                cut_y, i, left_shift, right_shift, top_shift, bot_shift)
+        #         out_bboxes.append(out_bbox)
+        #         # print(img_path)
+        # if use_mixup == 3:
+        #     out_bboxes = np.concatenate(out_bboxes, axis=0)
         out_bboxes1 = np.zeros([self.cfg.boxes, 5])
         out_bboxes1[:min(out_bboxes.shape[0], self.cfg.boxes)] = out_bboxes[:min(out_bboxes.shape[0], self.cfg.boxes)]
         return out_img, out_bboxes1

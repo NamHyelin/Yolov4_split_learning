@@ -63,12 +63,12 @@ image_path2 x1,y1,x2,y2,id x1,y1,x2,y2,id x1,y1,x2,y2,id ...
 ...
 '''
 
-if Cfg.mosaic and Cfg.cutmix:
-    Cfg.mixup = 4
-elif Cfg.cutmix:
-    Cfg.mixup = 2
-elif Cfg.mosaic:
-    Cfg.mixup = 3
+# if Cfg.mosaic and Cfg.cutmix:
+#     Cfg.mixup = 4
+# elif Cfg.cutmix:
+#     Cfg.mixup = 2
+# elif Cfg.mosaic:
+#     Cfg.mixup = 3
 
 Cfg.checkpoints = os.path.join(_BASE_DIR, 'checkpoints')
 Cfg.TRAIN_TENSORBOARD_DIR = os.path.join(_BASE_DIR, 'log')
