@@ -404,6 +404,7 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
             for batch in train_loader:
                 global_step += 1
                 epoch_step += 1
+                print('batchload: ', epoch_step)
                 images = batch[0]
                 bboxes = batch[1]
 
@@ -411,9 +412,9 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                 bboxes = bboxes.to(device=device)
 
 
-                #bboxes_pred = model(images)
+                #bboxes_pred = model(images) #원래주석
                 output = model(images)
-                print(output)
+                # print(output)
 
                 output_client1=output[0].clone().detach().requires_grad_(True)
                 output_client2=output[1].clone().detach().requires_grad_(True)
@@ -424,8 +425,11 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                     'label': bboxes
                 }
                 send_msg(s, msg)
+                print('CLIENT: ',epoch_step)
+                print('send output,label')
 
                 client_grad  = recv_msg(s)
+                print('receive gradient')
                 output[0].backward(client_grad[0], retain_graph=True)
                 output[1].backward(client_grad[1], retain_graph=True)
                 output[2].backward(client_grad[2])
@@ -451,7 +455,7 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                         os.remove(model_to_remove)
                     except:
                         logging.info(f'failed to remove {model_to_remove}')
-
+            time.sleep(2)
     writer.close()
 
 
@@ -536,6 +540,7 @@ def get_args(**kwargs):
     parser.add_argument('-pretrained', type=str, default=None, help='pretrained yolov4.conv.137')
     parser.add_argument('-classes', type=int, default=80, help='dataset classes')
     parser.add_argument('-train_label_path', dest='train_label', type=str, default='train.txt', help="train label path")
+    parser.add_argument('-val_label_path', dest='val_label', type=str, default='train.txt', help="val label path")
     parser.add_argument(
         '-optimizer', type=str, default='adam',
         help='training optimizer',
@@ -597,7 +602,8 @@ def _get_date_str():
 
 
 
-# parameter setting : -train_label_path '/home/sihun/yolov4_split_learning/data/dataset/label' -dir /home/sihun/yolov4_split_learning/data/dataset
+# parameter setting :
+# -train_label_path C:/Users/hyeli/Anaconda3/envs/hlnam/yolov4/data/dataset/label -val_label_path C:/Users/hyeli/Anaconda3/envs/hlnam/yolov4/data/dataset/label -dir 'C:/Users/hyeli/Anaconda3/envs/hlnam/yolov4/data/dataset -g 0
 if __name__ == "__main__":
 
     logging = init_logger(log_dir='log')

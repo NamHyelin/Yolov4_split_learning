@@ -79,6 +79,7 @@ def get_args(**kwargs):
     parser.add_argument('-pretrained', type=str, default=None, help='pretrained yolov4.conv.137')
     parser.add_argument('-classes', type=int, default=80, help='dataset classes')
     parser.add_argument('-train_label_path', dest='train_label', type=str, default='train.txt', help="train label path")
+    parser.add_argument('-val_label_path', dest='val_label', type=str, default='train.txt', help="val label path")
     parser.add_argument(
         '-optimizer', type=str, default='adam',
         help='training optimizer',
@@ -348,13 +349,15 @@ class Yolo_loss(nn.Module):
 
 def server_train(model_server, model_local,device, config, epochs=5, batch_size=1, save_cp=True, log_step=20, img_scale=0.5):
     users=1
-    val_dataset = Yolo_dataset(config.val_label, config, train=False)
+    val_dataset = Yolo_dataset(config.val_label, config, train=True)
 
     n_val = len(val_dataset)
 
 
-    val_loader = DataLoader(val_dataset, batch_size=config.batch // config.subdivisions, shuffle=True, num_workers=8,
-                            pin_memory=True, drop_last=True, collate_fn=val_collate)
+    # val_loader = DataLoader(val_dataset, batch_size=config.batch // config.subdivisions, shuffle=True, num_workers=8,
+    #                         pin_memory=True, drop_last=True, collate_fn=val_collate)
+    val_loader = DataLoader(val_dataset, batch_size=config.batch, shuffle=True,
+                              pin_memory=True, drop_last=True)
 
     writer = SummaryWriter(log_dir=config.TRAIN_TENSORBOARD_DIR,
                            filename_suffix=f'OPT_{config.TRAIN_OPTIMIZER}_LR_{config.learning_rate}_BS_{config.batch}_Sub_{config.subdivisions}_Size_{config.width}',
@@ -482,20 +485,27 @@ def server_train(model_server, model_local,device, config, epochs=5, batch_size=
 
     for epoch in range(epochs):
         model_server.train()
+        print('Epoch: ', epoch)
 
         for user in range(users):
             datasize = send_msg(clientsoclist[user], client_weights)
             total_sendsize_list.append(datasize)
             client_sendsize_list[user].append(datasize)
             train_sendsize_list.append(datasize)
+            batch_step=0
 
             with tqdm(total=train_total_batch[user], desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
                 for i in range(train_total_batch[user]):
                     # initialize all gradients to zero
                     model_server.zero_grad()
 
+                    batch_step += 1
+                    print('SERVER: ', batch_step)
+
                     # receive client message from socket
                     msg,datasize=recv_msg(clientsoclist[user])
+
+                    print('receive client ouput')
 
                     total_receivesize_list.append(datasize)
                     client_receivesize_list[user].append(datasize)
@@ -525,6 +535,7 @@ def server_train(model_server, model_local,device, config, epochs=5, batch_size=
                          client_output_cpu[2].grad.clone().detach())
 
                     datasize = send_msg(clientsoclist[user], msg)
+                    print('send gradient')
                     total_sendsize_list.append(datasize)
                     client_sendsize_list[user].append(datasize)
                     train_sendsize_list.append(datasize)
@@ -558,45 +569,47 @@ def server_train(model_server, model_local,device, config, epochs=5, batch_size=
             client_receivesize_list[user].append(datasize)
             train_receivesize_list.append(datasize)
 
-        eval_model_local = Yolov4_local()
-        # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
+            eval_model_local = Yolov4_local()
+            # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
+            eval_model_local.load_state_dict(model_local.state_dict())
+            eval_model_local.to(device)#여기까지됨
+            evaluator = evaluate(eval_model_local, model_server, val_loader, config, device)
 
-        eval_model_local.load_state_dict(model_local.state_dict())
-        eval_model_local.to(device)
-        evaluator = evaluate(eval_model_local, model_server, val_loader, config, device)
-        del eval_model_local
+            del eval_model_local
 
-        stats = evaluator.coco_eval['bbox'].stats
-        writer.add_scalar('train/AP', stats[0], global_step)
-        writer.add_scalar('train/AP50', stats[1], global_step)
-        writer.add_scalar('train/AP75', stats[2], global_step)
-        writer.add_scalar('train/AP_small', stats[3], global_step)
-        writer.add_scalar('train/AP_medium', stats[4], global_step)
-        writer.add_scalar('train/AP_large', stats[5], global_step)
-        writer.add_scalar('train/AR1', stats[6], global_step)
-        writer.add_scalar('train/AR10', stats[7], global_step)
-        writer.add_scalar('train/AR100', stats[8], global_step)
-        writer.add_scalar('train/AR_small', stats[9], global_step)
-        writer.add_scalar('train/AR_medium', stats[10], global_step)
-        writer.add_scalar('train/AR_large', stats[11], global_step)
+            stats = evaluator.coco_eval['bbox'].stats
+            writer.add_scalar('train/AP', stats[0], global_step)
+            writer.add_scalar('train/AP50', stats[1], global_step)
+            writer.add_scalar('train/AP75', stats[2], global_step)
+            writer.add_scalar('train/AP_small', stats[3], global_step)
+            writer.add_scalar('train/AP_medium', stats[4], global_step)
+            writer.add_scalar('train/AP_large', stats[5], global_step)
+            writer.add_scalar('train/AR1', stats[6], global_step)
+            writer.add_scalar('train/AR10', stats[7], global_step)
+            writer.add_scalar('train/AR100', stats[8], global_step)
+            writer.add_scalar('train/AR_small', stats[9], global_step)
+            writer.add_scalar('train/AR_medium', stats[10], global_step)
+            writer.add_scalar('train/AR_large', stats[11], global_step)
 
-        if save_cp:
-            try:
-                # os.mkdir(config.checkpoints)
-                os.makedirs(config.checkpoints, exist_ok=True)
-                logging.info('Created checkpoint directory')
-            except OSError:
-                pass
-            save_path = os.path.join(config.checkpoints, f'{save_prefix}{epoch + 1}.pth')
-            torch.save(model_server.state_dict(), save_path)
-            logging.info(f'Checkpoint {epoch + 1} saved !')
-            saved_models.append(save_path)
-            if len(saved_models) > config.keep_checkpoint_max > 0:
-                model_to_remove = saved_models.popleft()
+            if save_cp:
+
                 try:
-                    os.remove(model_to_remove)
-                except:
-                    logging.info(f'failed to remove {model_to_remove}')
+                    # os.mkdir(config.checkpoints)
+                    os.makedirs(config.checkpoints, exist_ok=True)
+                    logging.info('Created checkpoint directory')
+                except OSError:
+                    pass
+                save_path = os.path.join(config.checkpoints, f'{save_prefix}{epoch + 1}.pth')
+                torch.save(model_server.state_dict(), save_path)
+                logging.info(f'Checkpoint {epoch + 1} saved !')
+                saved_models.append(save_path)
+                if len(saved_models) > config.keep_checkpoint_max > 0:
+                    model_to_remove = saved_models.popleft()
+                    try:
+                        os.remove(model_to_remove)
+                    except:
+                        logging.info(f'failed to remove {model_to_remove}')
+            print('3')
 
     # print communication overheads
     print('---total_sendsize_list---')

@@ -245,17 +245,17 @@ class Yolo_dataset(Dataset):
 
         self.cfg = cfg
         self.train = train
-        label_path = '/home/sihun/pytorch-YOLOv4-master/data/dataset/label'
+        # label_path = '/home/sihun/pytorch-YOLOv4-master/data/dataset/label'
 
         truth = {}
         for i, filename in enumerate(glob.glob(os.path.join(label_path, '*.txt'))):
             with open(filename, 'r', encoding='utf-8') as f:
-                truth[str(i).zfill(3)+'.bmp'] = []
+                truth[str(i+1).zfill(3)+'.bmp'] = []
                 for line in f.readlines():
                     data = line.split(" ")
                     data.append(int(data[0]))
                     data.pop(0)
-                    truth[str(i).zfill(3)+'.bmp'].append([float(j) for j in data])
+                    truth[str(i+1).zfill(3)+'.bmp'].append([float(j) for j in data])
 
         self.truth = truth
         self.imgs = list(self.truth.keys())
