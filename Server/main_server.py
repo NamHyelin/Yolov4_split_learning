@@ -349,7 +349,7 @@ class Yolo_loss(nn.Module):
 
 def server_train(model_server, model_local,device, config, epochs=5, batch_size=1, save_cp=True, log_step=20, img_scale=0.5):
     users=1
-    val_dataset = Yolo_dataset(config.val_label, config, train=True)
+    val_dataset = Yolo_dataset(config.val_label, config, train=False)
 
     n_val = len(val_dataset)
 
@@ -492,77 +492,75 @@ def server_train(model_server, model_local,device, config, epochs=5, batch_size=
             total_sendsize_list.append(datasize)
             client_sendsize_list[user].append(datasize)
             train_sendsize_list.append(datasize)
-            batch_step=0
 
-            with tqdm(total=train_total_batch[user], desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
-                for i in range(train_total_batch[user]):
-                    # initialize all gradients to zero
-                    model_server.zero_grad()
-
-                    batch_step += 1
-                    print('SERVER: ', batch_step)
-
-                    # receive client message from socket
-                    msg,datasize=recv_msg(clientsoclist[user])
-
-                    print('receive client ouput')
-
-                    total_receivesize_list.append(datasize)
-                    client_receivesize_list[user].append(datasize)
-                    train_receivesize_list.append(datasize)
-
-                    global_step += 1
-
-                    client_output_cpu = msg['client_output']  # client output tensor
-                    bboxes = msg['label']  # label
-
-                    client_output1 = client_output_cpu[0].to(device)
-                    client_output2 = client_output_cpu[1].to(device)
-                    client_output3 = client_output_cpu[2].to(device)
+            pbar= tqdm(range(train_total_batch[user]))
+            for i in pbar:
+                pbar.set_description(f'Epoch {epoch + 1}/{epochs}')
+                # for i in range(train_total_batch[user]):
+                # initialize all gradients to zero
+                model_server.zero_grad()
 
 
-                    bboxes = bboxes.clone().detach().long().to(device)
+                # receive client message from socket
+                msg,datasize=recv_msg(clientsoclist[user])
 
-                    output = model_server(client_output1,client_output2, client_output3)
 
-                    loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = criterion(output, bboxes)
-                    # loss = loss / config.subdivisions
-                    loss.backward()
+                total_receivesize_list.append(datasize)
+                client_receivesize_list[user].append(datasize)
+                train_receivesize_list.append(datasize)
 
-                    optimizer.step()
-                    scheduler.step()
-                    msg=(client_output_cpu[0].grad.clone().detach(), client_output_cpu[1].grad.clone().detach(),
-                         client_output_cpu[2].grad.clone().detach())
+                global_step += 1
 
-                    datasize = send_msg(clientsoclist[user], msg)
-                    print('send gradient')
-                    total_sendsize_list.append(datasize)
-                    client_sendsize_list[user].append(datasize)
-                    train_sendsize_list.append(datasize)
+                client_output_cpu = msg['client_output']  # client output tensor
+                bboxes = msg['label']  # label
+
+                client_output1 = client_output_cpu[0].to(device)
+                client_output2 = client_output_cpu[1].to(device)
+                client_output3 = client_output_cpu[2].to(device)
+
+
+                bboxes = bboxes.clone().detach().long().to(device)
+
+                output = model_server(client_output1,client_output2, client_output3)
+
+                loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = criterion(output, bboxes)
+                # loss = loss / config.subdivisions
+                loss.backward()
+
+                optimizer.step()
+                scheduler.step()
+                msg=(client_output_cpu[0].grad.clone().detach(), client_output_cpu[1].grad.clone().detach(),
+                     client_output_cpu[2].grad.clone().detach())
+
+                datasize = send_msg(clientsoclist[user], msg)
+
+                total_sendsize_list.append(datasize)
+                client_sendsize_list[user].append(datasize)
+                train_sendsize_list.append(datasize)
 
 
 
-                    if global_step % (log_step * config.subdivisions) == 0:
-                        writer.add_scalar('train/Loss', loss.item(), global_step)
-                        writer.add_scalar('train/loss_xy', loss_xy.item(), global_step)
-                        writer.add_scalar('train/loss_wh', loss_wh.item(), global_step)
-                        writer.add_scalar('train/loss_obj', loss_obj.item(), global_step)
-                        writer.add_scalar('train/loss_cls', loss_cls.item(), global_step)
-                        writer.add_scalar('train/loss_l2', loss_l2.item(), global_step)
-                        writer.add_scalar('lr', scheduler.get_lr()[0] * config.batch, global_step)
-                        pbar.set_postfix(**{'loss (batch)': loss.item(), 'loss_xy': loss_xy.item(),
-                                            'loss_wh': loss_wh.item(),
-                                            'loss_obj': loss_obj.item(),
-                                            'loss_cls': loss_cls.item(),
-                                            'loss_l2': loss_l2.item(),
-                                            'lr': scheduler.get_lr()[0] * config.batch
-                                            })
-                        logging.debug('Train step_{}: loss : {},loss xy : {},loss wh : {},'
-                                      'loss obj : {}，loss cls : {},loss l2 : {},lr : {}'
-                                      .format(global_step, loss.item(), loss_xy.item(),
-                                              loss_wh.item(), loss_obj.item(),
-                                              loss_cls.item(), loss_l2.item(),
-                                              scheduler.get_lr()[0] * config.batch))
+                if global_step % (log_step * config.subdivisions) == 0:
+                    writer.add_scalar('train/Loss', loss.item(), global_step)
+                    writer.add_scalar('train/loss_xy', loss_xy.item(), global_step)
+                    writer.add_scalar('train/loss_wh', loss_wh.item(), global_step)
+                    writer.add_scalar('train/loss_obj', loss_obj.item(), global_step)
+                    writer.add_scalar('train/loss_cls', loss_cls.item(), global_step)
+                    writer.add_scalar('train/loss_l2', loss_l2.item(), global_step)
+                    writer.add_scalar('lr', scheduler.get_lr()[0] * config.batch, global_step)
+                    pbar.set_postfix(**{'loss (batch)': loss.item(), 'loss_xy': loss_xy.item(),
+                                        'loss_wh': loss_wh.item(),
+                                        'loss_obj': loss_obj.item(),
+                                        'loss_cls': loss_cls.item(),
+                                        'loss_l2': loss_l2.item(),
+                                        'lr': scheduler.get_lr()[0] * config.batch
+                                        })
+                    logging.debug('Train step_{}: loss : {},loss xy : {},loss wh : {},'
+                                  'loss obj : {}，loss cls : {},loss l2 : {},lr : {}'
+                                  .format(global_step, loss.item(), loss_xy.item(),
+                                          loss_wh.item(), loss_obj.item(),
+                                          loss_cls.item(), loss_l2.item(),
+                                          scheduler.get_lr()[0] * config.batch))
 
             client_weights, datasize = recv_msg(clientsoclist[user])
             total_receivesize_list.append(datasize)
@@ -684,19 +682,22 @@ def evaluate(model_local, model_server, data_loader, cfg, device, logger=None, *
     coco_evaluator = CocoEvaluator(coco, iou_types = ["bbox"], bbox_fmt='coco')
 
     for images, targets in data_loader:
-        model_input = [[cv2.resize(img, (cfg.w, cfg.h))] for img in images]
+        model_input = [[cv2.resize(np.float32(img), (cfg.w, cfg.h))] for img in images]
         model_input = np.concatenate(model_input, axis=0)
         model_input = model_input.transpose(0, 3, 1, 2)
         model_input = torch.from_numpy(model_input).div(255.0)
         model_input = model_input.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        # targets = [{k: v.to(device) for k, v in t.items()} for t in targets]   ##주석처리함
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         model_time = time.time()
         outputs = model_local(model_input)
-        outputs.long()
-        outputs=model_server(outputs)
+        # outputs.long()
+        outputs1= outputs[0]
+        outputs2 = outputs[1]
+        outputs3 = outputs[2]
+        outputs=model_server(outputs1, outputs2, outputs3)
         # outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
         model_time = time.time() - model_time
 
@@ -705,7 +706,7 @@ def evaluate(model_local, model_server, data_loader, cfg, device, logger=None, *
         # for img, target, output in zip(images, targets, outputs):
         for img, target, boxes, confs in zip(images, targets, outputs[0], outputs[1]):
             img_height, img_width = img.shape[:2]
-            # boxes = output[...,:4].copy()  # output boxes in yolo format
+            # boxes = outputs[...,:4].copy()  # output boxes in yolo format
             boxes = boxes.squeeze(2).cpu().detach().numpy()
             boxes[...,2:] = boxes[...,2:] - boxes[...,:2] # Transform [x1, y1, x2, y2] to [x1, y1, w, h]
             boxes[...,0] = boxes[...,0]*img_width

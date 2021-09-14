@@ -400,11 +400,14 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
         epoch_step = 0
         local_weight=recv_msg(s)
         model.load_state_dict(local_weight)
+
+
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
             for batch in train_loader:
+
                 global_step += 1
                 epoch_step += 1
-                print('batchload: ', epoch_step)
+
                 images = batch[0]
                 bboxes = batch[1]
 
@@ -425,17 +428,15 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                     'label': bboxes
                 }
                 send_msg(s, msg)
-                print('CLIENT: ',epoch_step)
-                print('send output,label')
 
                 client_grad  = recv_msg(s)
-                print('receive gradient')
                 output[0].backward(client_grad[0], retain_graph=True)
                 output[1].backward(client_grad[1], retain_graph=True)
                 output[2].backward(client_grad[2])
                 optimizer.step()
                 scheduler.step()
                 model.zero_grad()
+                pbar.update(1)
             send_msg(s, model.state_dict())
 
             if save_cp:

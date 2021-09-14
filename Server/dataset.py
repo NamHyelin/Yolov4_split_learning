@@ -310,16 +310,15 @@ def get_image_id(filename:str) -> int:
     For creating one's own `get_image_id` function, one can refer to
     https://github.com/google/automl/blob/master/efficientdet/dataset/create_pascal_tfrecord.py#L86
     or refer to the following code (where the filenames are like 'level1_123.jpg')
-    >>> lv, no = os.path.splitext(os.path.basename(filename))[0].split("_")
-    >>> lv = lv.replace("level", "")
-    >>> no = f"{int(no):04d}"
-    >>> return int(lv+no)
+    >>> lv, no = os.path.splitext(os.path.basename(filename))[0].split("_")  #lv='level1', no='123
+    >>> lv = lv.replace("level", "")     #lv='1'
+    >>> no = f"{int(no):04d}"            #no='0123'
+    >>> return int(lv+no)                #10123
     """
-    raise NotImplementedError("Create your own 'get_image_id' function")
-    lv, no = os.path.splitext(os.path.basename(filename))[0].split("_")
-    lv = lv.replace("level", "")
-    no = f"{int(no):04d}"
-    return int(lv+no)
+    # raise NotImplementedError("Create your own 'get_image_id' function")
+    #우리꺼는 001.bmp 니까 그냥 번호 그대로 쓰면 될듯. bmp만 제거
+    return int(os.path.splitext(os.path.basename(filename))[0])  #001에서 int니까 1
+
 
 
 if __name__ == "__main__":
