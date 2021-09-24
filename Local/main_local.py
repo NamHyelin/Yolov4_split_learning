@@ -117,7 +117,7 @@ def bboxes_iou(bboxes_a, bboxes_b, xyxy=True, GIoU=False, DIoU=False, CIoU=False
     return iou
 
 class Yolo_loss(nn.Module):
-    def __init__(self, n_classes=80, n_anchors=3, device=None, batch=2):
+    def __init__(self, n_classes=80, n_anchors=3, device=None, batch=1):
         super(Yolo_loss, self).__init__()
         self.device = device
         self.strides = [8, 16, 32]
@@ -283,8 +283,8 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
     n_train = len(train_dataset)
     n_val = len(val_dataset)
 
-    train_loader = DataLoader(train_dataset, batch_size=config.batch , shuffle=True,
-                               pin_memory=True, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=int(config.batch/config.subdivisions), shuffle=True,
+                               pin_memory=True, drop_last=True, collate_fn=collate)
 
     val_loader = DataLoader(val_dataset, batch_size=config.batch , shuffle=True,
                             pin_memory=True, drop_last=True, collate_fn=val_collate)
@@ -398,7 +398,7 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
     for epoch in range(epochs):
         model.train(True)
         epoch_step = 0
-        local_weight=recv_msg(s)
+        local_weight=recv_msg(s)    #aa 1
         model.load_state_dict(local_weight)
 
 
@@ -427,17 +427,17 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                     'client_output': (output_client1,output_client2,output_client3),
                     'label': bboxes
                 }
-                send_msg(s, msg)
+                send_msg(s, msg)  #aa 2
 
-                client_grad  = recv_msg(s)
+                client_grad  = recv_msg(s)   #aa 3
                 output[0].backward(client_grad[0], retain_graph=True)
                 output[1].backward(client_grad[1], retain_graph=True)
                 output[2].backward(client_grad[2])
                 optimizer.step()
                 scheduler.step()
                 model.zero_grad()
-                pbar.update(1)
-            send_msg(s, model.state_dict())
+                pbar.update(images.shape[0])
+            send_msg(s, model.state_dict())  #aa 4
 
             if save_cp:
                 try:
@@ -528,8 +528,8 @@ def get_args(**kwargs):
     cfg = kwargs
     parser = argparse.ArgumentParser(description='Train the Model on images and target masks',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    # parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=2,
-    #                     help='Batch size', dest='batchsize')
+    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=64,
+                        help='Batch size', dest='batch')
     parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.001,
                         help='Learning rate', dest='learning_rate')
     parser.add_argument('-f', '--load', dest='load', type=str, default=None,
@@ -539,7 +539,7 @@ def get_args(**kwargs):
     parser.add_argument('-dir', '--data-dir', type=str, default=None,
                         help='dataset dir', dest='dataset_dir')
     parser.add_argument('-pretrained', type=str, default=None, help='pretrained yolov4.conv.137')
-    parser.add_argument('-classes', type=int, default=80, help='dataset classes')
+    parser.add_argument('-classes', type=int, default=10, help='dataset classes')
     parser.add_argument('-train_label_path', dest='train_label', type=str, default='train.txt', help="train label path")
     parser.add_argument('-val_label_path', dest='val_label', type=str, default='train.txt', help="val label path")
     parser.add_argument(

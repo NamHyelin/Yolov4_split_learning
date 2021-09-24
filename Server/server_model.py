@@ -104,7 +104,7 @@ class Neck(nn.Module):
         self.conv19 = Conv_Bn_Activation(128, 256, 3, 1, 'leaky')
         self.conv20 = Conv_Bn_Activation(256, 128, 1, 1, 'leaky')
 
-    def forward(self, input, downsample4, downsample3, inference=False):#
+    def forward(self, input, downsample4, downsample3, inference=False):
         x1 = self.conv1(input)
         x2 = self.conv2(x1)
         x3 = self.conv3(x2)
