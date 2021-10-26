@@ -4,7 +4,7 @@ import os, sys, math
 import argparse
 from collections import deque
 import datetime
-
+import copy
 import cv2
 from tqdm import tqdm
 import numpy as np
@@ -19,11 +19,7 @@ from easydict import EasyDict as edict
 from dataset import Yolo_dataset
 from cfg import Cfg
 from local_model import Yolov4_local
-from tool.darknet2pytorch import Darknet
 
-from tool.tv_reference.utils import collate_fn as val_collate
-from tool.tv_reference.coco_utils import convert_to_coco_api
-from tool.tv_reference.coco_eval import CocoEvaluator
 import struct
 import socket
 import pickle
@@ -116,152 +112,6 @@ def bboxes_iou(bboxes_a, bboxes_b, xyxy=True, GIoU=False, DIoU=False, CIoU=False
                 return iou - (rho2 / c2 + v * alpha)  # CIoU
     return iou
 
-class Yolo_loss(nn.Module):
-    def __init__(self, n_classes=80, n_anchors=3, device=None, batch=1):
-        super(Yolo_loss, self).__init__()
-        self.device = device
-        self.strides = [8, 16, 32]
-        image_size = 608
-        self.n_classes = n_classes
-        self.n_anchors = n_anchors
-
-        self.anchors = [[12, 16], [19, 36], [40, 28], [36, 75], [76, 55], [72, 146], [142, 110], [192, 243], [459, 401]]
-        self.anch_masks = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
-        self.ignore_thre = 0.5
-
-        self.masked_anchors, self.ref_anchors, self.grid_x, self.grid_y, self.anchor_w, self.anchor_h = [], [], [], [], [], []
-
-        for i in range(3):
-            all_anchors_grid = [(w / self.strides[i], h / self.strides[i]) for w, h in self.anchors]
-            masked_anchors = np.array([all_anchors_grid[j] for j in self.anch_masks[i]], dtype=np.float32)
-            ref_anchors = np.zeros((len(all_anchors_grid), 4), dtype=np.float32)
-            ref_anchors[:, 2:] = np.array(all_anchors_grid, dtype=np.float32)
-            ref_anchors = torch.from_numpy(ref_anchors)
-            # calculate pred - xywh obj cls
-            fsize = image_size // self.strides[i]
-            grid_x = torch.arange(fsize, dtype=torch.float).repeat(batch, 3, fsize, 1).to(device)
-            grid_y = torch.arange(fsize, dtype=torch.float).repeat(batch, 3, fsize, 1).permute(0, 1, 3, 2).to(device)
-            anchor_w = torch.from_numpy(masked_anchors[:, 0]).repeat(batch, fsize, fsize, 1).permute(0, 3, 1, 2).to(
-                device)
-            anchor_h = torch.from_numpy(masked_anchors[:, 1]).repeat(batch, fsize, fsize, 1).permute(0, 3, 1, 2).to(
-                device)
-
-            self.masked_anchors.append(masked_anchors)
-            self.ref_anchors.append(ref_anchors)
-            self.grid_x.append(grid_x)
-            self.grid_y.append(grid_y)
-            self.anchor_w.append(anchor_w)
-            self.anchor_h.append(anchor_h)
-
-    def build_target(self, pred, labels, batchsize, fsize, n_ch, output_id):
-        # target assignment
-        tgt_mask = torch.zeros(batchsize, self.n_anchors, fsize, fsize, 4 + self.n_classes).to(device=self.device)
-        obj_mask = torch.ones(batchsize, self.n_anchors, fsize, fsize).to(device=self.device)
-        tgt_scale = torch.zeros(batchsize, self.n_anchors, fsize, fsize, 2).to(self.device)
-        target = torch.zeros(batchsize, self.n_anchors, fsize, fsize, n_ch).to(self.device)
-
-        # labels = labels.cpu().data
-        nlabel = (labels.sum(dim=2) > 0).sum(dim=1)  # number of objects
-
-        truth_x_all = (labels[:, :, 2] + labels[:, :, 0]) / (self.strides[output_id] * 2)
-        truth_y_all = (labels[:, :, 3] + labels[:, :, 1]) / (self.strides[output_id] * 2)
-        truth_w_all = (labels[:, :, 2] - labels[:, :, 0]) / self.strides[output_id]
-        truth_h_all = (labels[:, :, 3] - labels[:, :, 1]) / self.strides[output_id]
-        truth_i_all = truth_x_all.to(torch.int16).cpu().numpy()
-        truth_j_all = truth_y_all.to(torch.int16).cpu().numpy()
-
-        for b in range(batchsize):
-            n = int(nlabel[b])
-            if n == 0:
-                continue
-            truth_box = torch.zeros(n, 4).to(self.device)
-            truth_box[:n, 2] = truth_w_all[b, :n]
-            truth_box[:n, 3] = truth_h_all[b, :n]
-            truth_i = truth_i_all[b, :n]
-            truth_j = truth_j_all[b, :n]
-
-            # calculate iou between truth and reference anchors
-            anchor_ious_all = bboxes_iou(truth_box.cpu(), self.ref_anchors[output_id], CIoU=True)
-
-            # temp = bbox_iou(truth_box.cpu(), self.ref_anchors[output_id])
-
-            best_n_all = anchor_ious_all.argmax(dim=1)
-            best_n = best_n_all % 3
-            best_n_mask = ((best_n_all == self.anch_masks[output_id][0]) |
-                           (best_n_all == self.anch_masks[output_id][1]) |
-                           (best_n_all == self.anch_masks[output_id][2]))
-
-            if sum(best_n_mask) == 0:
-                continue
-
-            truth_box[:n, 0] = truth_x_all[b, :n]
-            truth_box[:n, 1] = truth_y_all[b, :n]
-
-            pred_ious = bboxes_iou(pred[b].view(-1, 4), truth_box, xyxy=False)
-            pred_best_iou, _ = pred_ious.max(dim=1)
-            pred_best_iou = (pred_best_iou > self.ignore_thre)
-            pred_best_iou = pred_best_iou.view(pred[b].shape[:3])
-            # set mask to zero (ignore) if pred matches truth
-            obj_mask[b] = ~ pred_best_iou
-
-            for ti in range(best_n.shape[0]):
-                if best_n_mask[ti] == 1:
-                    i, j = truth_i[ti], truth_j[ti]
-                    a = best_n[ti]
-                    obj_mask[b, a, j, i] = 1
-                    tgt_mask[b, a, j, i, :] = 1
-                    target[b, a, j, i, 0] = truth_x_all[b, ti] - truth_x_all[b, ti].to(torch.int16).to(torch.float)
-                    target[b, a, j, i, 1] = truth_y_all[b, ti] - truth_y_all[b, ti].to(torch.int16).to(torch.float)
-                    target[b, a, j, i, 2] = torch.log(
-                        truth_w_all[b, ti] / torch.Tensor(self.masked_anchors[output_id])[best_n[ti], 0] + 1e-16)
-                    target[b, a, j, i, 3] = torch.log(
-                        truth_h_all[b, ti] / torch.Tensor(self.masked_anchors[output_id])[best_n[ti], 1] + 1e-16)
-                    target[b, a, j, i, 4] = 1
-                    target[b, a, j, i, 5 + labels[b, ti, 4].to(torch.int16).cpu().numpy()] = 1
-                    tgt_scale[b, a, j, i, :] = torch.sqrt(2 - truth_w_all[b, ti] * truth_h_all[b, ti] / fsize / fsize)
-        return obj_mask, tgt_mask, tgt_scale, target
-
-    def forward(self, xin, labels=None):
-        loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = 0, 0, 0, 0, 0, 0
-        for output_id, output in enumerate(xin):
-            batchsize = output.shape[0]
-            fsize = output.shape[2]
-            n_ch = 5 + self.n_classes
-
-            output = output.view(batchsize, self.n_anchors, n_ch, fsize, fsize)
-            output = output.permute(0, 1, 3, 4, 2)  # .contiguous()
-
-            # logistic activation for xy, obj, cls
-            output[..., np.r_[:2, 4:n_ch]] = torch.sigmoid(output[..., np.r_[:2, 4:n_ch]])
-
-            pred = output[..., :4].clone()
-            pred[..., 0] += self.grid_x[output_id]
-            pred[..., 1] += self.grid_y[output_id]
-            pred[..., 2] = torch.exp(pred[..., 2]) * self.anchor_w[output_id]
-            pred[..., 3] = torch.exp(pred[..., 3]) * self.anchor_h[output_id]
-
-            obj_mask, tgt_mask, tgt_scale, target = self.build_target(pred, labels, batchsize, fsize, n_ch, output_id)
-
-            # loss calculation
-            output[..., 4] *= obj_mask
-            output[..., np.r_[0:4, 5:n_ch]] *= tgt_mask
-            output[..., 2:4] *= tgt_scale
-
-            target[..., 4] *= obj_mask
-            target[..., np.r_[0:4, 5:n_ch]] *= tgt_mask
-            target[..., 2:4] *= tgt_scale
-
-            loss_xy += F.binary_cross_entropy(input=output[..., :2], target=target[..., :2],
-                                              weight=tgt_scale * tgt_scale, reduction='sum')
-            loss_wh += F.mse_loss(input=output[..., 2:4], target=target[..., 2:4], reduction='sum') / 2
-            loss_obj += F.binary_cross_entropy(input=output[..., 4], target=target[..., 4], reduction='sum')
-            loss_cls += F.binary_cross_entropy(input=output[..., 5:], target=target[..., 5:], reduction='sum')
-            loss_l2 += F.mse_loss(input=output, target=target, reduction='sum')
-
-        loss = loss_xy + loss_wh + loss_obj + loss_cls
-
-        return loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2
-
 def collate(batch):
     images = []
     bboxes = []
@@ -272,32 +122,25 @@ def collate(batch):
     images = images.transpose(0, 3, 1, 2)
     images = torch.from_numpy(images).div(255.0)
     bboxes = np.concatenate(bboxes, axis=0)
+
     bboxes = torch.from_numpy(bboxes)
     return images, bboxes
 
 
 def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=20, img_scale=0.5):
     train_dataset = Yolo_dataset(config.train_label, config, train=True)
-    val_dataset = Yolo_dataset(config.val_label, config, train=False)
 
     n_train = len(train_dataset)
-    n_val = len(val_dataset)
 
-    train_loader = DataLoader(train_dataset, batch_size=int(config.batch/config.subdivisions), shuffle=True,
+    train_loader = DataLoader(train_dataset, batch_size= config.batch // config.subdivisions, shuffle=True,
                                pin_memory=True, drop_last=True, collate_fn=collate)
 
-    val_loader = DataLoader(val_dataset, batch_size=config.batch , shuffle=True,
-                            pin_memory=True, drop_last=True, collate_fn=val_collate)
 
     writer = SummaryWriter(log_dir=config.TRAIN_TENSORBOARD_DIR,
                            filename_suffix=f'OPT_{config.TRAIN_OPTIMIZER}_LR_{config.learning_rate}_BS_{config.batch}_Sub_{config.subdivisions}_Size_{config.width}',
                            comment=f'OPT_{config.TRAIN_OPTIMIZER}_LR_{config.learning_rate}_BS_{config.batch}_Sub_{config.subdivisions}_Size_{config.width}')
 
-    # writer.add_images('legend',
-    #                   torch.from_numpy(train_dataset.label2colorlegend2(cfg.DATA_CLASSES).transpose([2, 0, 1])).to(
-    #                       device).unsqueeze(0))
-    max_itr = config.TRAIN_EPOCHS * n_train
-    # global_step = cfg.TRAIN_MINEPOCH * n_train
+
 
     global_step = 0
     logging.info(f'''Starting training:
@@ -306,7 +149,6 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
         Subdivisions:    {config.subdivisions}
         Learning rate:   {config.learning_rate}
         Training size:   {n_train}
-        # Validation size: {n_val}
         Checkpoints:     {save_cp}
         Device:          {device.type}
         Images size:     {config.width}
@@ -345,9 +187,6 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
 
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, burnin_schedule)
 
-    criterion = Yolo_loss(device=device, batch=config.batch // config.subdivisions, n_classes=config.classes)
-    # scheduler = ReduceLROnPlateau(optimizer, mode='max', verbose=True, patience=6, min_lr=1e-7)
-    # scheduler = CosineAnnealingWarmRestarts(optimizer, 0.001, 1e-6, 20)
 
     save_prefix = 'Yolov4_epoch'
     saved_models = deque()
@@ -373,6 +212,7 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
         return msg
 
 
+
     def recvall(sock, n):
         # helper function to receive n bytes or return None if EOF is hit
         data = b''
@@ -394,20 +234,18 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
     msg = n_train
     send_msg(s, msg)  # send total_batch of train dataset
 
+    model.train()
 
     for epoch in range(epochs):
-        model.train(True)
         epoch_step = 0
-        local_weight=recv_msg(s)    #aa 1
+        local_weight=recv_msg(s)
         model.load_state_dict(local_weight)
-
-
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
             for batch in train_loader:
+                # print(model.down1.conv1.conv[0].weight)
 
                 global_step += 1
                 epoch_step += 1
-
                 images = batch[0]
                 bboxes = batch[1]
 
@@ -415,11 +253,10 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                 bboxes = bboxes.to(device=device)
 
 
-                #bboxes_pred = model(images) #원래주석
                 output = model(images)
                 # print(output)
 
-                output_client1=output[0].clone().detach().requires_grad_(True)
+                output_client1=output[0].clone().detach().requires_grad_(True) #5
                 output_client2=output[1].clone().detach().requires_grad_(True)
                 output_client3=output[2].clone().detach().requires_grad_(True)
                 ##send to the server and receive partial loss for update
@@ -427,9 +264,9 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                     'client_output': (output_client1,output_client2,output_client3),
                     'label': bboxes
                 }
-                send_msg(s, msg)  #aa 2
+                send_msg(s, msg)
 
-                client_grad  = recv_msg(s)   #aa 3
+                client_grad  = recv_msg(s)
                 output[0].backward(client_grad[0], retain_graph=True)
                 output[1].backward(client_grad[1], retain_graph=True)
                 output[2].backward(client_grad[2])
@@ -437,7 +274,8 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                 scheduler.step()
                 model.zero_grad()
                 pbar.update(images.shape[0])
-            send_msg(s, model.state_dict())  #aa 4
+
+            send_msg(s, model.state_dict())
 
             if save_cp:
                 try:
@@ -456,81 +294,18 @@ def local_train(model, device, config, epochs=5, batch_size=1, save_cp=True, log
                         os.remove(model_to_remove)
                     except:
                         logging.info(f'failed to remove {model_to_remove}')
-            time.sleep(2)
+
     writer.close()
 
 
-@torch.no_grad()
-def evaluate(model, data_loader, cfg, device, logger=None, **kwargs):
-    """ finished, tested
-    """
-    # cpu_device = torch.device("cpu")
-    model.eval()
-    # header = 'Test:'
-
-    coco = convert_to_coco_api(data_loader.dataset, bbox_fmt='coco')
-    coco_evaluator = CocoEvaluator(coco, iou_types = ["bbox"], bbox_fmt='coco')
-
-    for images, targets in data_loader:
-        model_input = [[cv2.resize(img, (cfg.w, cfg.h))] for img in images]
-        model_input = np.concatenate(model_input, axis=0)
-        model_input = model_input.transpose(0, 3, 1, 2)
-        model_input = torch.from_numpy(model_input).div(255.0)
-        model_input = model_input.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        model_time = time.time()
-        outputs = model(model_input)
-
-        # outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
-        model_time = time.time() - model_time
-
-        # outputs = outputs.cpu().detach().numpy()
-        res = {}
-        # for img, target, output in zip(images, targets, outputs):
-        for img, target, boxes, confs in zip(images, targets, outputs[0], outputs[1]):
-            img_height, img_width = img.shape[:2]
-            # boxes = output[...,:4].copy()  # output boxes in yolo format
-            boxes = boxes.squeeze(2).cpu().detach().numpy()
-            boxes[...,2:] = boxes[...,2:] - boxes[...,:2] # Transform [x1, y1, x2, y2] to [x1, y1, w, h]
-            boxes[...,0] = boxes[...,0]*img_width
-            boxes[...,1] = boxes[...,1]*img_height
-            boxes[...,2] = boxes[...,2]*img_width
-            boxes[...,3] = boxes[...,3]*img_height
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-            # confs = output[...,4:].copy()
-            confs = confs.cpu().detach().numpy()
-            labels = np.argmax(confs, axis=1).flatten()
-            labels = torch.as_tensor(labels, dtype=torch.int64)
-            scores = np.max(confs, axis=1).flatten()
-            scores = torch.as_tensor(scores, dtype=torch.float32)
-            res[target["image_id"].item()] = {
-                "boxes": boxes,
-                "scores": scores,
-                "labels": labels,
-            }
-        evaluator_time = time.time()
-        coco_evaluator.update(res)
-        evaluator_time = time.time() - evaluator_time
-
-    # gather the stats from all processes
-    coco_evaluator.synchronize_between_processes()
-
-    # accumulate predictions from all images
-    coco_evaluator.accumulate()
-    coco_evaluator.summarize()
-
-    return coco_evaluator
 
 def get_args(**kwargs):
     cfg = kwargs
     parser = argparse.ArgumentParser(description='Train the Model on images and target masks',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=64,
-                        help='Batch size', dest='batch')
-    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.001,
+    # parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=2,
+    #                     help='Batch size', dest='batch')
+    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.00261,
                         help='Learning rate', dest='learning_rate')
     parser.add_argument('-f', '--load', dest='load', type=str, default=None,
                         help='Load model from a .pth file')
@@ -539,9 +314,8 @@ def get_args(**kwargs):
     parser.add_argument('-dir', '--data-dir', type=str, default=None,
                         help='dataset dir', dest='dataset_dir')
     parser.add_argument('-pretrained', type=str, default=None, help='pretrained yolov4.conv.137')
-    parser.add_argument('-classes', type=int, default=10, help='dataset classes')
+    # parser.add_argument('-classes', type=int, default=10, help='dataset classes')
     parser.add_argument('-train_label_path', dest='train_label', type=str, default='train.txt', help="train label path")
-    parser.add_argument('-val_label_path', dest='val_label', type=str, default='train.txt', help="val label path")
     parser.add_argument(
         '-optimizer', type=str, default='adam',
         help='training optimizer',
@@ -604,7 +378,8 @@ def _get_date_str():
 
 
 # parameter setting :
-# -train_label_path C:/Users/hyeli/Anaconda3/envs/hlnam/yolov4/data/dataset/label -val_label_path C:/Users/hyeli/Anaconda3/envs/hlnam/yolov4/data/dataset/label -dir 'C:/Users/hyeli/Anaconda3/envs/hlnam/yolov4/data/dataset -g 0
+# -train_label_path /home/sihun/yolov4_split_learning/data/dataset/Train/1set/label -dir /home/sihun/yolov4_split_learning/data/dataset/Train/1set -g 0
+
 if __name__ == "__main__":
 
     logging = init_logger(log_dir='log')
