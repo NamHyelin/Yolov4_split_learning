@@ -1,4 +1,10 @@
-# Pytorch-YOLOv4
+# YOLOv4 Split Learning
+Code for "S. Kook, S. Baek, H. Nam and S. -L. Kim, "Demo: ML-based Vision Classification in the Smart Brewing Factory Testbed," 2022 IEEE International Conference on Communications Workshops (ICC Workshops), Seoul, Korea, Republic of, 2022, pp. 1-2, doi: 10.1109/ICCWorkshops53468.2022.9915030."
+
+
+
+
+# Pytorch-YOLOv4 (REF)
 
 ![](https://img.shields.io/static/v1?label=python&message=3.6|3.7&color=blue)
 ![](https://img.shields.io/static/v1?label=pytorch&message=1.4&color=<COLOR>)
