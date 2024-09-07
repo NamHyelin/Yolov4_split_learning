@@ -7,7 +7,7 @@ Local and Server model can operate in same computing device,
 or they should be connected through a shared port.
 
 * Server : /Server/main_server.py  -val_label_path Yourfolder/label -dir Yourfolder/Test -g 0
-* Local : /Local/main_local.py  -val_label_path Yourfolder/label -dir Yourfolder/Test -g 0
+* Local : /Local/main_local.py  -train_label_path Yourfolder/label -dir Yourfolder/Test -g 0
 
 
 
