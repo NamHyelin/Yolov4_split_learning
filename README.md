@@ -1,11 +1,13 @@
 # YOLOv4 Split Learning
 Code for "S. Kook, S. Baek, H. Nam and S. -L. Kim, "Demo: ML-based Vision Classification in the Smart Brewing Factory Testbed," 2022 IEEE International Conference on Communications Workshops (ICC Workshops), Seoul, Korea, Republic of, 2022, pp. 1-2, doi: 10.1109/ICCWorkshops53468.2022.9915030."
+- Co-work with Sihun Baek
 
 # Getting started
 Local and Server model can operate in same computing device,
 or they should be connected through a shared port.
 
-* Server : /Server/main_server.py
+* Server : /Server/main_server.py  -val_label_path Yourfolder/label -dir Yourfolder/Test -g 0
+* Local : /Local/main_local.py  -val_label_path Yourfolder/label -dir Yourfolder/Test -g 0
 
 
 
